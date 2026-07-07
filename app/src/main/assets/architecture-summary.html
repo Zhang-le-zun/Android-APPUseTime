@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ApplicationUseTime 项目架构总结</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            background: #f0f2f5;
+            color: #1a1a2e;
+            padding: 40px 20px;
+        }
+        .container { max-width: 1200px; margin: 0 auto; }
+        h1 {
+            text-align: center;
+            font-size: 2rem;
+            margin-bottom: 8px;
+            color: #16213e;
+        }
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 1rem;
+        }
+        .graph-section {
+            background: white;
+            border-radius: 16px;
+            padding: 30px;
+            margin-bottom: 24px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+            overflow: hidden;
+        }
+        .graph-section h2 {
+            font-size: 1.3rem;
+            margin-bottom: 16px;
+            padding-bottom: 8px;
+            border-bottom: 2px solid #e8e8e8;
+            color: #0f3460;
+        }
+        .graph-section h2 .badge {
+            display: inline-block;
+            font-size: 0.7rem;
+            background: #e94560;
+            color: white;
+            padding: 2px 10px;
+            border-radius: 12px;
+            margin-left: 8px;
+            vertical-align: middle;
+        }
+        .mermaid { text-align: center; }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 16px;
+            margin: 20px 0;
+        }
+        .stat-card {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+            border: 1px solid #eee;
+        }
+        .stat-card .num {
+            font-size: 2rem;
+            font-weight: 700;
+            color: #16213e;
+        }
+        .stat-card .label {
+            font-size: 0.85rem;
+            color: #888;
+            margin-top: 4px;
+        }
+        .stat-card.highlight { border-color: #e94560; background: #fff5f5; }
+        .stat-card.highlight .num { color: #e94560; }
+
+        .todo-list {
+            list-style: none;
+            padding: 0;
+        }
+        .todo-list li {
+            background: #f8f9fa;
+            border-left: 4px solid #e94560;
+            padding: 12px 16px;
+            margin-bottom: 10px;
+            border-radius: 0 8px 8px 0;
+            font-size: 0.95rem;
+        }
+        .todo-list li .tag {
+            display: inline-block;
+            font-size: 0.7rem;
+            background: #e94560;
+            color: white;
+            padding: 1px 8px;
+            border-radius: 8px;
+            margin-right: 8px;
+        }
+        .todo-list li .tag.warn { background: #f39c12; }
+        .todo-list li .tag.info { background: #3498db; }
+
+        .footer {
+            text-align: center;
+            color: #999;
+            font-size: 0.8rem;
+            margin-top: 30px;
+        }
+        .module-card {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 16px 20px;
+            margin-bottom: 10px;
+            border-left: 4px solid #16213e;
+        }
+        .module-card h3 {
+            font-size: 1rem;
+            margin-bottom: 6px;
+        }
+        .module-card .files {
+            color: #666;
+            font-size: 0.85rem;
+        }
+        .module-card .files span {
+            display: inline-block;
+            background: #e8e8e8;
+            padding: 1px 8px;
+            border-radius: 6px;
+            margin: 2px 4px 2px 0;
+            font-family: 'Consolas', monospace;
+            font-size: 0.8rem;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>📱 ApplicationUseTime 项目架构总结</h1>
+    <p class="subtitle">Android 应用使用时间分析器 · 基于 Codebase 知识图谱自动生成</p>
+
+    <!-- 关键指标 -->
+    <div class="graph-section">
+        <h2>📊 关键指标</h2>
+        <div class="stats-grid">
+            <div class="stat-card highlight">
+                <div class="num">633</div>
+                <div class="label">Kotlin 源文件</div>
+            </div>
+            <div class="stat-card highlight">
+                <div class="num">6,658</div>
+                <div class="label">代码节点数</div>
+            </div>
+            <div class="stat-card highlight">
+                <div class="num">11,163</div>
+                <div class="label">关系边数</div>
+            </div>
+            <div class="stat-card">
+                <div class="num">1</div>
+                <div class="label">Activity</div>
+            </div>
+            <div class="stat-card">
+                <div class="num">8</div>
+                <div class="label">Compose 组件</div>
+            </div>
+            <div class="stat-card">
+                <div class="num">API 24</div>
+                <div class="label">最低 SDK</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 架构图 -->
+    <div class="graph-section">
+        <h2>🏗️ 整体架构图</h2>
+        <div class="mermaid">
+            graph TB
+                subgraph 入口层[入口层 MainActivity]
+                    A[MainActivity] -->|onCreate| B[权限检查]
+                    A -->|onResume| B
+                    B -->|无权限| C[PermissionScreen]
+                    B -->|有权限| D[MainScreen]
+                end
+
+                subgraph UI层[UI层 Jetpack Compose + Material3]
+                    D --> E[SummaryCard 今日摘要]
+                    D --> F[AppRankingList 应用排行]
+                    D --> G[HourlyChart 24h分布图]
+                    D --> H[TrendCard 趋势对比]
+                    D --> I[WeeklyReportSection 周报]
+                    I --> I1[QuickStatCard]
+                    I --> I2[TrendLineChart]
+                    I --> I3[CategoryBreakdown]
+                    D --> J[InsightSection 洞察建议]
+                end
+
+                subgraph 数据层[数据层]
+                    K[UsageStatsRepository] -->|queryAndBuild| L[UsageStatsManager 系统API]
+                    K -->|方案一| L1[queryAndAggregateUsageStats API28+]
+                    K -->|方案二| L2[queryUsageStats + 手动聚合]
+                    K -->|方案三| L3[queryEvents 事件流]
+                    L1 --> M[去重聚合]
+                    L2 --> M
+                    L3 --> M
+                    M --> N[AppUsage 列表]
+                end
+
+                subgraph 分析层[分析层]
+                    O[UsageAnalyzer] --> O1[compareTrend 趋势对比]
+                    O --> O2[analyzeTimeProfile 时间画像]
+                    O --> O3[generateWeeklyReport 周报生成]
+                    O --> O4[generateSuggestions 建议生成]
+                    P[AppClassifier] --> P1[classify 应用分类]
+                end
+
+                subgraph 持久化层[持久化层 DataStore Preferences]
+                    Q[UsageStore] --> Q1[saveTodaySummary 每日摘要JSON]
+                    Q --> Q2[saveDailyAppDetails 每日详情JSON]
+                    Q --> Q3[getAllTimeRankFlow 全历史排行]
+                    Q --> Q4[getHistoryFlow 历史数据流]
+                end
+
+                subgraph 云端同步[云端同步 WIP]
+                    R[SyncManager 文件缺失] -->|OkHttp 4.12.0| S[(Supabase 后端)]
+                    S --> T[数据库 待确认状态]
+                end
+
+                subgraph 数据模型[数据模型]
+                    U1[AppUsage: packageName / appName / category / usageTimeMs]
+                    U2[DaySummary: dateTimestamp / totalTimeMs / appCount]
+                    U3[AppCategory 枚举: social / game / tool / entertainment / productivity]
+                end
+
+                N -->|传入| D
+                N -->|持久化| Q
+                Q -->|历史数据| O
+                O -->|分析结果| J
+                K -->|异步同步| R
+        </div>
+    </div>
+
+    <!-- 时序图 -->
+    <div class="graph-section">
+        <h2>⏱️ 数据流时序图</h2>
+        <div class="mermaid">
+            sequenceDiagram
+                participant 用户 as 用户
+                participant UI as UI层 Compose
+                participant Act as MainActivity
+                participant Repo as UsageStatsRepository
+                participant Sys as 系统UsageStatsManager
+                participant Store as UsageStore DataStore
+                participant Ana as UsageAnalyzer
+                participant Cloud as SyncManager 未完成
+
+                用户->>Act: 打开App
+                Act->>Act: 检查PACKAGE_USAGE_STATS权限
+                alt 无权限
+                    Act->>UI: 显示PermissionScreen
+                    用户->>UI: 点击授予权限
+                    UI->>Act: openUsageAccessSettings
+                else 有权限
+                    Act->>Repo: getTodayUsageStats
+                    Repo->>Sys: queryAndAggregateUsageStats
+                    Sys-->>Repo: 聚合数据
+                    Repo->>Repo: 去重+分类+构建AppUsage
+                    Repo-->>Act: today数据
+                    Act->>Repo: getUsageForDay 昨天
+                    Repo-->>Act: yesterday数据
+                    Act->>Repo: getHourlyDistribution
+                    Repo-->>Act: hourly分布
+                    Act->>Repo: getDailySummaryForDays 7天
+                    Repo-->>Act: weekly摘要
+                    Act->>Store: saveTodaySummary
+                    Store-->>Act: 持久化完成
+                    Repo-->>Cloud: syncDayDataFromStore 异步
+                    Act->>UI: 渲染MainScreen
+                    UI->>Ana: 分析/生成建议
+                    Ana-->>UI: insights + suggestions
+                end
+        </div>
+    </div>
+
+    <!-- 模块结构 -->
+    <div class="graph-section">
+        <h2>📁 包结构</h2>
+        <div class="module-card">
+            <h3>📦 net.android.apllicationusetime</h3>
+            <div class="files">
+                <span>MainActivity.kt</span> — 主入口/权限/状态管理
+            </div>
+        </div>
+        <div class="module-card" style="border-left-color: #e94560;">
+            <h3>📦 data</h3>
+            <div class="files">
+                <span>UsageStatsRepository.kt</span> — 核心数据查询(3层去重方案)<br>
+                <span>UsageStore.kt</span> — DataStore 本地持久化<br>
+                <span>UsageAnalyzer.kt</span> — 分析/趋势/周报/建议<br>
+                <span>AppClassifier.kt</span> — 应用分类<br>
+                <span style="background:#ffd;border-color:#e94560;">SyncManager.kt ❌ 缺失</span> — 云端同步
+            </div>
+        </div>
+        <div class="module-card" style="border-left-color: #3498db;">
+            <h3>📦 model</h3>
+            <div class="files">
+                <span>AppUsage.kt</span> — AppUsage / DaySummary / AppCategory
+            </div>
+        </div>
+        <div class="module-card" style="border-left-color: #2ecc71;">
+            <h3>📦 ui</h3>
+            <div class="files">
+                <span>MainScreen.kt</span> <span>PermissionScreen.kt</span><br>
+                <span>AppRankingList.kt</span> <span>HourlyChart.kt</span><br>
+                <span>InsightSection.kt</span> <span>SummaryCard.kt</span><br>
+                <span>TrendCard.kt</span> <span>WeeklyReportSection.kt</span><br>
+                <span>EmptyStateView.kt</span>
+            </div>
+        </div>
+        <div class="module-card" style="border-left-color: #9b59b6;">
+            <h3>📦 ui.theme</h3>
+            <div class="files">
+                <span>Theme.kt</span> — Material3 主题
+            </div>
+        </div>
+    </div>
+
+    <!-- 待办问题 -->
+    <div class="graph-section">
+        <h2>⚠️ 待办问题 <span class="badge">4项</span></h2>
+        <ul class="todo-list">
+            <li><span class="tag">高</span> <strong>SyncManager.kt 文件缺失</strong> — UsageStatsRepository 第168行调用了 SyncManager.syncDayDataFromStore()，但该文件不存在</li>
+            <li><span class="tag warn">中</span> <strong>Supabase SDK 未集成</strong> — 当前仅依赖 OkHttp 自定义实现，未使用官方 supabase-kt SDK</li>
+            <li><span class="tag info">中</span> <strong>无 ViewModel 架构</strong> — UI 状态全部集中在 MainActivity 中，建议重构为 ViewModel + StateFlow 模式</li>
+            <li><span class="tag info">低</span> <strong>无测试覆盖</strong> — 仅有默认的 ExampleUnitTest 占位测试</li>
+        </ul>
+    </div>
+
+    <div class="footer">
+        生成时间: 2026-07-08 · 数据来源: Codebase Memory MCP 知识图谱
+    </div>
+</div>
+
+<script>
+    mermaid.initialize({
+        startOnLoad: true,
+        theme: 'default',
+        themeVariables: {
+            primaryColor: '#16213e',
+            primaryTextColor: '#fff',
+            primaryBorderColor: '#0f3460',
+            lineColor: '#e94560',
+            secondaryColor: '#f0f2f5',
+            tertiaryColor: '#fff',
+            fontSize: '14px'
+        },
+        flowchart: {
+            useMaxWidth: true,
+            htmlLabels: true,
+            curve: 'basis',
+            padding: 20
+        },
+        sequence: {
+            useMaxWidth: true,
+            showSequenceNumbers: false
+        }
+    });
+</script>
+</body>
+</html>

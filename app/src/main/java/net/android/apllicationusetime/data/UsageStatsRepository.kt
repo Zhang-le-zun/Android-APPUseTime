@@ -8,314 +8,221 @@ import android.graphics.Canvas
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.util.Log
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import net.android.apllicationusetime.data.supabase.SyncManager
 import net.android.apllicationusetime.model.AppUsage
 import net.android.apllicationusetime.model.DaySummary
 import java.util.Calendar
-import java.util.concurrent.TimeUnit
+import kotlin.math.max
 
 object UsageStatsRepository {
 
     private const val TAG = "UsageStatsRepo"
 
-    /**
-     * 获取今日使用统计，结果已包含分类
-     */
     fun getTodayUsageStats(context: Context): List<AppUsage> {
-        val calendar = Calendar.getInstance()
-        calendar.set(Calendar.HOUR_OF_DAY, 0)
-        calendar.set(Calendar.MINUTE, 0)
-        calendar.set(Calendar.SECOND, 0)
-        calendar.set(Calendar.MILLISECOND, 0)
-        val startTime = calendar.timeInMillis
-        val endTime = System.currentTimeMillis()
-        return queryAndBuild(context, startTime, endTime)
+        val cal = Calendar.getInstance()
+        cal.set(Calendar.HOUR_OF_DAY, 0); cal.set(Calendar.MINUTE, 0)
+        cal.set(Calendar.SECOND, 0); cal.set(Calendar.MILLISECOND, 0)
+        val start = cal.timeInMillis
+        val end = System.currentTimeMillis()
+        val result = queryAndBuild(context, start, end)
+        // 异步持久化到 DataStore
+        persistToStore(context, UsageStore.getTodayDateKey(), result)
+        return result
     }
 
-    /**
-     * 获取近 N 天的使用统计（按天聚合）
-     */
-    fun getDailySummaryForDays(context: Context, days: Int): List<DaySummary> {
-        val calendar = Calendar.getInstance()
-        val summaries = mutableListOf<DaySummary>()
-
-        for (i in 0 until days) {
-            calendar.timeInMillis = System.currentTimeMillis()
-            calendar.add(Calendar.DAY_OF_YEAR, -i)
-            calendar.set(Calendar.HOUR_OF_DAY, 0)
-            calendar.set(Calendar.MINUTE, 0)
-            calendar.set(Calendar.SECOND, 0)
-            calendar.set(Calendar.MILLISECOND, 0)
-            val dayStart = calendar.timeInMillis
-
-            calendar.set(Calendar.HOUR_OF_DAY, 23)
-            calendar.set(Calendar.MINUTE, 59)
-            calendar.set(Calendar.SECOND, 59)
-            calendar.set(Calendar.MILLISECOND, 999)
-            val dayEnd = calendar.timeInMillis
-
-            val apps = queryAndBuild(context, dayStart, dayEnd)
-            summaries.add(
-                DaySummary(
-                    dateTimestamp = dayStart,
-                    totalTimeMs = apps.sumOf { it.usageTimeMs },
-                    appCount = apps.size,
-                    topApp = apps.firstOrNull()
-                )
-            )
-        }
-        return summaries
+    fun getUsageForDay(context: Context, daysAgo: Int): List<AppUsage> {
+        val cal = Calendar.getInstance()
+        cal.add(Calendar.DAY_OF_YEAR, -daysAgo)
+        cal.set(Calendar.HOUR_OF_DAY, 0); cal.set(Calendar.MINUTE, 0)
+        cal.set(Calendar.SECOND, 0); cal.set(Calendar.MILLISECOND, 0)
+        val start = cal.timeInMillis
+        cal.set(Calendar.HOUR_OF_DAY, 23); cal.set(Calendar.MINUTE, 59)
+        cal.set(Calendar.SECOND, 59); cal.set(Calendar.MILLISECOND, 999)
+        return queryAndBuild(context, start, cal.timeInMillis)
     }
 
-    /**
-     * 获取按小时分布的使用时长（0-23 点）
-     */
     fun getHourlyDistribution(context: Context, daysAgo: Int = 0): List<Long> {
-        val usageStatsManager = context.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager
+        val cal = Calendar.getInstance()
+        cal.add(Calendar.DAY_OF_YEAR, -daysAgo)
+        cal.set(Calendar.HOUR_OF_DAY, 0); cal.set(Calendar.MINUTE, 0)
+        cal.set(Calendar.SECOND, 0); cal.set(Calendar.MILLISECOND, 0)
+        val start = cal.timeInMillis
+        cal.set(Calendar.HOUR_OF_DAY, 23); cal.set(Calendar.MINUTE, 59)
+        cal.set(Calendar.SECOND, 59); cal.set(Calendar.MILLISECOND, 999)
+        val end = cal.timeInMillis
+        val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager
             ?: return List(24) { 0L }
-
-        val calendar = Calendar.getInstance()
-        calendar.add(Calendar.DAY_OF_YEAR, -daysAgo)
-        calendar.set(Calendar.HOUR_OF_DAY, 0)
-        calendar.set(Calendar.MINUTE, 0)
-        calendar.set(Calendar.SECOND, 0)
-        calendar.set(Calendar.MILLISECOND, 0)
-        val dayStart = calendar.timeInMillis
-
-        calendar.set(Calendar.HOUR_OF_DAY, 23)
-        calendar.set(Calendar.MINUTE, 59)
-        calendar.set(Calendar.SECOND, 59)
-        calendar.set(Calendar.MILLISECOND, 999)
-        val dayEnd = calendar.timeInMillis
-
-        val statsList = usageStatsManager.queryUsageStats(
-            UsageStatsManager.INTERVAL_DAILY, dayStart, dayEnd
-        )
-        val selfPackageName = context.packageName
-
-        val hourlyMs = LongArray(24)
-        for (stats in statsList) {
-            if (stats.packageName == selfPackageName) continue
-            if (stats.totalTimeInForeground <= 0) continue
+        val aggregated = usm.queryAndAggregateUsageStats(start, end)
+        val self = context.packageName
+        val h = LongArray(24)
+        for ((pkg, stats) in aggregated) {
+            if (pkg == self || stats.totalTimeInForeground <= 0) continue
             val hour = Calendar.getInstance().apply { timeInMillis = stats.lastTimeUsed }
                 .get(Calendar.HOUR_OF_DAY)
-            hourlyMs[hour] = hourlyMs[hour] + stats.totalTimeInForeground
+            h[hour] += stats.totalTimeInForeground
         }
-        return hourlyMs.toList()
+        return h.toList()
     }
+
+    fun getDailySummaryForDays(context: Context, days: Int): List<DaySummary> {
+        val cal = Calendar.getInstance()
+        val list = mutableListOf<DaySummary>()
+        for (i in 0 until days) {
+            cal.timeInMillis = System.currentTimeMillis()
+            cal.add(Calendar.DAY_OF_YEAR, -i)
+            cal.set(Calendar.HOUR_OF_DAY, 0); cal.set(Calendar.MINUTE, 0)
+            cal.set(Calendar.SECOND, 0); cal.set(Calendar.MILLISECOND, 0)
+            val start = cal.timeInMillis
+            cal.set(Calendar.HOUR_OF_DAY, 23); cal.set(Calendar.MINUTE, 59)
+            cal.set(Calendar.SECOND, 59); cal.set(Calendar.MILLISECOND, 999)
+            val apps = queryAndBuild(context, start, cal.timeInMillis)
+            list.add(DaySummary(start, apps.sumOf { it.usageTimeMs }, apps.size, apps.firstOrNull()))
+        }
+        return list
+    }
+
+    // ================== 核心查询 ==================
 
     /**
-     * 获取指定时间段最近一次的使用数据（用于趋势对比）
+     * 获取今天到现在的最大可能前台时长（用于截断全天数据）
      */
-    fun getUsageForDay(context: Context, daysAgo: Int): List<AppUsage> {
-        val calendar = Calendar.getInstance()
-        calendar.add(Calendar.DAY_OF_YEAR, -daysAgo)
-        calendar.set(Calendar.HOUR_OF_DAY, 0)
-        calendar.set(Calendar.MINUTE, 0)
-        calendar.set(Calendar.SECOND, 0)
-        calendar.set(Calendar.MILLISECOND, 0)
-        val startTime = calendar.timeInMillis
-
-        calendar.set(Calendar.HOUR_OF_DAY, 23)
-        calendar.set(Calendar.MINUTE, 59)
-        calendar.set(Calendar.SECOND, 59)
-        calendar.set(Calendar.MILLISECOND, 999)
-        val endTime = calendar.timeInMillis
-
-        return queryAndBuild(context, startTime, endTime)
+    private fun getTodayRangeMs(): Long {
+        val now = Calendar.getInstance()
+        val startOfDay = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        return now.timeInMillis - startOfDay.timeInMillis
     }
-
-    // ---- 内部方法 ----
 
     private fun queryAndBuild(context: Context, startTime: Long, endTime: Long): List<AppUsage> {
-        val usageStatsManager = context.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager
+        val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager
             ?: return emptyList()
-
-        val selfPackageName = context.packageName
+        val self = context.packageName
         val pm = context.packageManager
 
-        // 方案一：queryUsageStats INTERVAL_DAILY
+        // 计算时间范围上限，防止系统返回跨日累计数据
+        val rangeLimit = endTime - startTime  // 如0:50时约为 3,000,000ms ≈ 50分钟
+
+        // 方案一：queryEvents —— 最精确，按事件时间戳累加
         try {
-            val statsList = usageStatsManager.queryUsageStats(
-                UsageStatsManager.INTERVAL_DAILY, startTime, endTime
-            )
-            val fromStats = buildFromStatsList(statsList, pm, selfPackageName)
-            if (fromStats.isNotEmpty()) {
-                Log.d(TAG, "INTERVAL_DAILY returned ${fromStats.size} apps")
-                return fromStats
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "INTERVAL_DAILY failed: ${e.message}")
-        }
-
-        // 方案二：queryUsageStats INTERVAL_BEST
-        try {
-            val statsList2 = usageStatsManager.queryUsageStats(
-                UsageStatsManager.INTERVAL_BEST, startTime, endTime
-            )
-            val fromStats2 = buildFromStatsList(statsList2, pm, selfPackageName)
-            if (fromStats2.isNotEmpty()) {
-                Log.d(TAG, "INTERVAL_BEST returned ${fromStats2.size} apps")
-                return fromStats2
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "INTERVAL_BEST failed: ${e.message}")
-        }
-
-        // 方案三：通过 queryEvents 重建使用时长
-        // 这次用更健壮的方式——按 app 分组后计算每个 RESUME→PAUSE 间隔
-        try {
-            Log.d(TAG, "queryEvents fallback from $startTime to $endTime")
-            val usageEvents = usageStatsManager.queryEvents(startTime, endTime)
-
-            // 按 packageName 存储 RESUME/PAUSE 事件时间戳栈
-            val appEvents = mutableMapOf<String, MutableList<Pair<Long, Boolean>>>() // timeStamp, isResume
-
-            while (usageEvents.hasNextEvent()) {
-                val event = android.app.usage.UsageEvents.Event()
-                usageEvents.getNextEvent(event)
-                if (event.packageName == selfPackageName) continue
-
-                val type = event.eventType
-                // 记录所有可能的 resume/pause 类型
-                val isResume = (type == 1 || type == 6)   // MOVE_TO_FOREGROUND, ACTIVITY_RESUMED
-                val isPause = (type == 2 || type == 7 || type == 8) // MOVE_TO_BACKGROUND, ACTIVITY_PAUSED, ACTIVITY_STOPPED
-
-                if (isResume || isPause) {
-                    appEvents.getOrPut(event.packageName) { mutableListOf() }
-                        .add(Pair(event.timeStamp, isResume))
-                }
-            }
-
-            Log.d(TAG, "queryEvents: collected ${appEvents.size} packages")
-
-            // 计算每个应用的累计前台时长
-            val totalTimeMap = mutableMapOf<String, Long>()
-            for ((pkg, events) in appEvents) {
-                // 按时间戳排序
-                val sorted = events.sortedBy { it.first }
-                var resumeTime: Long? = null
-                var totalMs = 0L
-                var pairs = 0
-
-                for ((ts, isResume) in sorted) {
-                    if (isResume) {
-                        resumeTime = ts
-                    } else if (resumeTime != null) {
-                        val duration = ts - resumeTime
-                        if (duration in 1L..86400000L) {
-                            totalMs += duration
-                            pairs++
+            val events = usm.queryEvents(startTime, endTime)
+            val fg = mutableMapOf<String, Long>()
+            val total = mutableMapOf<String, Long>()
+            while (events.hasNextEvent()) {
+                val e = android.app.usage.UsageEvents.Event()
+                events.getNextEvent(e)
+                if (e.packageName == self) continue
+                when (e.eventType) {
+                    1, 6 -> fg[e.packageName] = e.timeStamp  // MOVE_TO_FOREGROUND / ACTIVITY_STARTED
+                    2, 7, 8 -> {  // MOVE_TO_BACKGROUND / ACTIVITY_STOPPED / ACTIVITY_DESTROYED
+                        val t = fg.remove(e.packageName) ?: continue
+                        val d = e.timeStamp - t
+                        if (d in 1L..86400000L) {
+                            total[e.packageName] = total.getOrDefault(e.packageName, 0L) + d
                         }
-                        resumeTime = null
                     }
                 }
-                if (totalMs > 0) {
-                    totalTimeMap[pkg] = totalMs
-                    Log.d(TAG, "  $pkg: ${totalMs / 60000} min ($pairs sessions)")
-                }
             }
-
-            Log.d(TAG, "queryEvents result: ${totalTimeMap.size} apps with >0 time")
-
-            if (totalTimeMap.isEmpty()) {
-                // 调试：dump 一些原始事件类型
-                val usageEvents2 = usageStatsManager.queryEvents(startTime, endTime)
-                val typeCounts = mutableMapOf<Int, Int>()
-                var sampleCount = 0
-                while (usageEvents2.hasNextEvent() && sampleCount < 50) {
-                    val ev = android.app.usage.UsageEvents.Event()
-                    usageEvents2.getNextEvent(ev)
-                    if (ev.packageName == selfPackageName) continue
-                    typeCounts[ev.eventType] = typeCounts.getOrDefault(ev.eventType, 0) + 1
-                    sampleCount++
-                }
-                Log.w(TAG, "Sample event types on this device: $typeCounts")
-                Log.w(TAG, "Both queryUsageStats and queryEvents returned no valid time data on this device")
-                Log.w(TAG, "vivo fix: user MUST enable 健康使用设备 in Settings, then grant usage access permission")
+            val result = total.filter { it.value > 0 }
+                .map { (pkg, time) -> buildAppUsage(pkg, time, pm) }
+                .filterNotNull()
+                .sortedByDescending { it.usageTimeMs }
+            if (result.isNotEmpty()) {
+                Log.d(TAG, "queryEvents returned ${result.size} apps (precise)")
+                return result
             }
+        } catch (_: Exception) { }
 
-            return totalTimeMap
-                .filter { it.value > 0 }
-                .toList()
-                .sortedByDescending { it.second }
-                .mapNotNull { (pkgName, totalTime) ->
-                    buildAppUsage(pkgName, totalTime, pm)
+        // 方案二：queryAndAggregateUsageStats (API 28+) —— 按包名聚合，但需截断
+        try {
+            val aggregated = usm.queryAndAggregateUsageStats(startTime, endTime)
+            val result = aggregated
+                .filter { (pkg, stats) -> pkg != self && stats.totalTimeInForeground > 0 }
+                .map { (pkg, stats) ->
+                    // 截断到时间范围上限，防止跨日累计
+                    val clipped = stats.totalTimeInForeground.coerceAtMost(rangeLimit)
+                    buildAppUsage(pkg, clipped, pm)
                 }
-        } catch (e: Exception) {
-            Log.e(TAG, "queryEvents failed: ${e.message}")
-            return emptyList()
+                .filterNotNull()
+                .sortedByDescending { it.usageTimeMs }
+            if (result.isNotEmpty()) {
+                Log.d(TAG, "queryAndAggregate returned ${result.size} apps (clipped to $rangeLimit)")
+                return result
+            }
+        } catch (_: Exception) { }
+
+        // 方案三：queryUsageStats + 手动聚合 + 截断
+        return try {
+            val statsList = usm.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, startTime, endTime)
+            val merged = statsList
+                .filter { it.packageName != self && it.totalTimeInForeground > 0 }
+                .groupBy { it.packageName }
+                .map { (pkg, list) ->
+                    val total = list.sumOf { it.totalTimeInForeground }
+                    val clipped = total.coerceAtMost(rangeLimit)
+                    buildAppUsage(pkg, clipped, pm)
+                }
+                .filterNotNull()
+                .sortedByDescending { it.usageTimeMs }
+            if (merged.isNotEmpty()) {
+                Log.d(TAG, "Manual merged ${merged.size} apps (clipped to $rangeLimit)")
+                merged
+            } else {
+                emptyList()
+            }
+        } catch (e: Exception) { Log.e(TAG, "queryUsageStats failed: ${e.message}"); emptyList() }
+    }
+
+    private fun buildAppUsage(pkg: String, ms: Long, pm: PackageManager): AppUsage? {
+        val name = try { pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString() }
+            catch (_: Exception) { pkg }
+        val isSystem = try {
+            (pm.getApplicationInfo(pkg, 0).flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
+        } catch (_: Exception) { true }
+        if (isSystem) return null
+        val icon = try { pm.getApplicationIcon(pkg).toBitmap() } catch (_: Exception) { null }
+        return AppUsage(pkg, name, ms, AppClassifier.classify(pkg, name), icon)
+    }
+
+    // ================== DataStore 持久化 ==================
+
+    private fun persistToStore(context: Context, dateKey: String, apps: List<AppUsage>) {
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                UsageStore.saveDailyAppDetails(context, dateKey, apps)
+                Log.d(TAG, "Persisted ${apps.size} apps to DataStore")
+                // 异步同步到 Supabase
+                val totalMs = apps.sumOf { it.usageTimeMs }
+                SyncManager.syncTodayData(context, dateKey, totalMs, apps.size, apps.firstOrNull()?.appName, apps)
+            } catch (e: Exception) {
+                Log.w(TAG, "DataStore persist failed: ${e.message}")
+            }
         }
     }
 
-    private fun buildFromStatsList(
-        statsList: List<android.app.usage.UsageStats>,
-        pm: PackageManager,
-        selfPackageName: String
-    ): List<AppUsage> {
-        return statsList
-            .filter { it.totalTimeInForeground > 0 }
-            .filter { it.packageName != selfPackageName }
-            .sortedByDescending { it.totalTimeInForeground }
-            .mapNotNull { stats ->
-                buildAppUsage(stats.packageName, stats.totalTimeInForeground, pm)
-            }
-    }
+    // ================== 便捷查询 ==================
 
-    private fun buildAppUsage(pkgName: String, totalTimeMs: Long, pm: PackageManager): AppUsage? {
-        val appName = try {
-            val appInfo = pm.getApplicationInfo(pkgName, 0)
-            pm.getApplicationLabel(appInfo).toString()
-        } catch (e: PackageManager.NameNotFoundException) {
-            pkgName
-        }
-
-        val isSystemApp = try {
-            val appInfo = pm.getApplicationInfo(pkgName, 0)
-            (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
-        } catch (e: PackageManager.NameNotFoundException) {
-            true
-        }
-
-        if (isSystemApp) return null
-
-        val icon = try {
-            val drawable = pm.getApplicationIcon(pkgName)
-            drawable.toBitmap()
-        } catch (e: Exception) {
-            null
-        }
-
-        return AppUsage(
-            packageName = pkgName,
-            appName = appName,
-            usageTimeMs = totalTimeMs,
-            category = AppClassifier.classify(pkgName, appName),
-            icon = icon
-        )
-    }
+    fun getAllTimeRankFlow(context: Context) = UsageStore.getAllTimeRankFlow(context)
 
     fun formatDuration(ms: Long): String {
         if (ms <= 0) return "0分钟"
         val totalMinutes = ms / 1000 / 60
-        val hours = totalMinutes / 60
-        val minutes = totalMinutes % 60
-        return when {
-            hours > 0 && minutes > 0 -> "${hours}小时${minutes}分钟"
-            hours > 0 -> "${hours}小时"
-            else -> "${minutes}分钟"
-        }
+        val h = totalMinutes / 60
+        val m = totalMinutes % 60
+        return when { h > 0 && m > 0 -> "${h}小时${m}分钟"; h > 0 -> "${h}小时"; else -> "${m}分钟" }
     }
 
     private fun Drawable.toBitmap(): Bitmap {
-        if (this is BitmapDrawable && bitmap != null) {
-            return bitmap
-        }
-        val width = if (intrinsicWidth > 0) intrinsicWidth else 96
-        val height = if (intrinsicHeight > 0) intrinsicHeight else 96
-        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
-        setBounds(0, 0, canvas.width, canvas.height)
-        draw(canvas)
-        return bitmap
+        if (this is BitmapDrawable && bitmap != null) return bitmap
+        val w = if (intrinsicWidth > 0) intrinsicWidth else 96
+        val h = if (intrinsicHeight > 0) intrinsicHeight else 96
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp); setBounds(0, 0, c.width, c.height); draw(c); return bmp
     }
 }
