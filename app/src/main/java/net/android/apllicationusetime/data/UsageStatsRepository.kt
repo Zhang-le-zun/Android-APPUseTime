@@ -10,7 +10,9 @@ import android.graphics.drawable.Drawable
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import net.android.apllicationusetime.data.supabase.AuthManager
 import net.android.apllicationusetime.data.supabase.SyncManager
 import net.android.apllicationusetime.model.AppUsage
 import net.android.apllicationusetime.model.DaySummary
@@ -192,14 +194,21 @@ object UsageStatsRepository {
 
     // ================== DataStore 持久化 ==================
 
+    private var cachedEmail: String = ""
+
+    /** 由 MainActivity 在登录后调用，缓存当前用户邮箱 */
+    fun setCachedEmail(email: String) { cachedEmail = email }
+
     private fun persistToStore(context: Context, dateKey: String, apps: List<AppUsage>) {
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 UsageStore.saveDailyAppDetails(context, dateKey, apps)
                 Log.d(TAG, "Persisted ${apps.size} apps to DataStore")
-                // 异步同步到 Supabase
-                val totalMs = apps.sumOf { it.usageTimeMs }
-                SyncManager.syncTodayData(context, dateKey, totalMs, apps.size, apps.firstOrNull()?.appName, apps)
+                // 异步同步到 Supabase（如果已登录）
+                if (cachedEmail.isNotEmpty()) {
+                    val totalMs = apps.sumOf { it.usageTimeMs }
+                    SyncManager.syncTodayData(context, dateKey, totalMs, apps.size, apps.firstOrNull()?.appName, apps, cachedEmail)
+                }
             } catch (e: Exception) {
                 Log.w(TAG, "DataStore persist failed: ${e.message}")
             }

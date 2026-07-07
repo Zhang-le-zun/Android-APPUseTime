@@ -31,13 +31,6 @@ import java.util.Calendar
 class MainActivity : ComponentActivity() {
 
     private var hasPermission by mutableStateOf(false)
-    private var usageData by mutableStateOf<List<AppUsage>>(emptyList())
-    private var isLoading by mutableStateOf(true)
-    private var refreshTrigger by mutableStateOf(0L)
-
-    private var yesterdayData by mutableStateOf<List<AppUsage>>(emptyList())
-    private var hourlyDistribution by mutableStateOf<List<Long>>(List(24) { 0L })
-    private var weeklySummaries by mutableStateOf<List<DaySummary>>(emptyList())
     private var currentPage by mutableStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -57,7 +50,6 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         val newPermission = checkUsagePermission()
         if (newPermission != hasPermission) hasPermission = newPermission
-        if (newPermission) refreshTrigger = System.currentTimeMillis()
     }
 
     private fun checkUsagePermission(): Boolean {
@@ -65,10 +57,6 @@ class MainActivity : ComponentActivity() {
         return appOps.checkOpNoThrow(
             AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), packageName
         ) == AppOpsManager.MODE_ALLOWED
-    }
-
-    private fun openUsageAccessSettings() {
-        startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
     }
 }
 
@@ -109,11 +97,12 @@ private fun AppContent(
         isLoggedIn = loginState
         currentUsername = savedUsername ?: ""
         currentEmail = savedEmail ?: ""
+        if (loginState && savedEmail != null) {
+            UsageStatsRepository.setCachedEmail(savedEmail!!)
+        }
     }
 
-    // 应用权限检查
-    val actualHasPermission by remember { mutableStateOf(hasPermission) }
-    // 更新 permission（onResume 导致的状态变化需重新读取）
+    // 权限状态
     var effectivePermission by remember(hasPermission) { mutableStateOf(hasPermission) }
     LaunchedEffect(hasPermission) {
         effectivePermission = hasPermission
@@ -123,11 +112,8 @@ private fun AppContent(
     Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
 
         when {
-            isLoggedIn == null -> {
-                // 正在检查登录状态
-            }
+            isLoggedIn == null -> { /* 检查中 */ }
             !isLoggedIn!! -> {
-                // ---- 未登录 ----
                 if (showRegister) {
                     RegisterScreen(
                         isLoading = authLoading,
@@ -143,6 +129,7 @@ private fun AppContent(
                                         isLoggedIn = true
                                         currentUsername = result.username ?: username
                                         currentEmail = result.email ?: email
+                                        UsageStatsRepository.setCachedEmail(currentEmail)
                                     } else if (result.success) {
                                         authError = result.error ?: "注册成功！请检查邮箱确认"
                                     } else {
@@ -171,6 +158,7 @@ private fun AppContent(
                                         isLoggedIn = true
                                         currentUsername = result.username ?: ""
                                         currentEmail = result.email ?: email
+                                        UsageStatsRepository.setCachedEmail(currentEmail)
                                     } else {
                                         authError = result.error ?: "登录失败"
                                     }
@@ -185,13 +173,11 @@ private fun AppContent(
                 }
             }
             !effectivePermission -> {
-                // ---- 已登录但未授权 ----
                 PermissionScreen(onRequestPermission = {
                     activity.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
                 })
             }
             else -> {
-                // ---- 已登录 + 已授权 ----
                 val allTimeRankFlow = remember(refreshTrigger) {
                     UsageStatsRepository.getAllTimeRankFlow(activity)
                 }
@@ -239,6 +225,7 @@ private fun AppContent(
                     username = currentUsername.ifEmpty { currentEmail },
                     onLogout = {
                         scope.launch {
+                            UsageStatsRepository.setCachedEmail("")
                             AuthManager.signOut(activity)
                             isLoggedIn = false
                         }

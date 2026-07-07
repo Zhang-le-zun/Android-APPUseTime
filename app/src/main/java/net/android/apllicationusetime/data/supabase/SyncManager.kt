@@ -1,7 +1,6 @@
 package net.android.apllicationusetime.data.supabase
 
 import android.content.Context
-import android.provider.Settings
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -17,7 +16,7 @@ import java.util.concurrent.TimeUnit
 /**
  * 云端同步管理器 —— 将应用使用数据同步到 Supabase
  *
- * 使用设备 Android ID 作为用户标识，无需登录。
+ * 使用登录用户的邮箱作为用户标识。
  * 需要网络权限和 INTERNET 权限。
  */
 object SyncManager {
@@ -35,7 +34,8 @@ object SyncManager {
     // ================== 公共入口 ==================
 
     /**
-     * 同步今天的数据到 Supabase（由 UsageStatsRepository 调用）
+     * 同步今天的数据到 Supabase
+     * @param userEmail 登录用户的邮箱（作为 user_id）
      */
     suspend fun syncTodayData(
         context: Context,
@@ -43,19 +43,19 @@ object SyncManager {
         totalTimeMs: Long,
         appCount: Int,
         topApp: String?,
-        apps: List<AppUsage>
+        apps: List<AppUsage>,
+        userEmail: String
     ) {
         withContext(Dispatchers.IO) {
             try {
-                val deviceId = getDeviceId(context)
-                Log.d(TAG, "Syncing date=$dateKey device=$deviceId ${apps.size} apps")
+                Log.d(TAG, "Syncing date=$dateKey user=$userEmail ${apps.size} apps")
 
                 // 上传每日摘要
-                upsertDailySummary(deviceId, dateKey, System.currentTimeMillis(), totalTimeMs, appCount, topApp)
+                upsertDailySummary(userEmail, dateKey, System.currentTimeMillis(), totalTimeMs, appCount, topApp)
 
                 // 上传应用详情
                 if (apps.isNotEmpty()) {
-                    uploadAppDetails(deviceId, dateKey, apps)
+                    uploadAppDetails(userEmail, dateKey, apps)
                 }
 
                 Log.d(TAG, "Sync completed for $dateKey")
@@ -68,7 +68,7 @@ object SyncManager {
     // ================== 每日摘要上传 ==================
 
     private fun upsertDailySummary(
-        deviceId: String,
+        userEmail: String,
         dateKey: String,
         dateTimestamp: Long,
         totalTimeMs: Long,
@@ -76,7 +76,7 @@ object SyncManager {
         topApp: String?
     ) {
         val body = JSONObject().apply {
-            put("user_id", deviceId)
+            put("user_id", userEmail)
             put("date_key", dateKey)
             put("date_timestamp", dateTimestamp)
             put("total_time_ms", totalTimeMs)
@@ -98,14 +98,13 @@ object SyncManager {
 
     // ================== 应用详情上传 ==================
 
-    private fun uploadAppDetails(deviceId: String, dateKey: String, apps: List<AppUsage>) {
-        // 先删旧数据，再批量插入
-        deleteExistingAppDetails(deviceId, dateKey)
+    private fun uploadAppDetails(userEmail: String, dateKey: String, apps: List<AppUsage>) {
+        deleteExistingAppDetails(userEmail, dateKey)
 
         val rows = JSONArray()
         apps.forEach { app ->
             rows.put(JSONObject().apply {
-                put("user_id", deviceId)
+                put("user_id", userEmail)
                 put("date_key", dateKey)
                 put("package_name", app.packageName)
                 put("app_name", app.appName)
@@ -128,10 +127,10 @@ object SyncManager {
         executeRequest(request, "upload app details (${apps.size})")
     }
 
-    private fun deleteExistingAppDetails(deviceId: String, dateKey: String) {
+    private fun deleteExistingAppDetails(userEmail: String, dateKey: String) {
         val request = Request.Builder()
             .url("${SupabaseConfig.REST_URL}/${SupabaseConfig.TABLE_APP_USAGE_DETAILS}?" +
-                    "user_id=eq.$deviceId&date_key=eq.$dateKey")
+                    "user_id=eq.$userEmail&date_key=eq.$dateKey")
             .addHeader("apikey", SupabaseConfig.ANON_KEY)
             .addHeader("Authorization", "Bearer ${SupabaseConfig.ANON_KEY}")
             .delete()
@@ -145,13 +144,10 @@ object SyncManager {
 
     // ================== 云端查询 ==================
 
-    /**
-     * 从云端查询某天的摘要
-     */
-    fun fetchSummaryFromCloud(deviceId: String, dateKey: String): JSONObject? {
+    fun fetchSummaryFromCloud(userEmail: String, dateKey: String): JSONObject? {
         val request = Request.Builder()
             .url("${SupabaseConfig.REST_URL}/${SupabaseConfig.TABLE_DAILY_SUMMARIES}?" +
-                    "user_id=eq.$deviceId&date_key=eq.$dateKey&select=*")
+                    "user_id=eq.$userEmail&date_key=eq.$dateKey&select=*")
             .addHeader("apikey", SupabaseConfig.ANON_KEY)
             .addHeader("Authorization", "Bearer ${SupabaseConfig.ANON_KEY}")
             .get()
@@ -171,13 +167,10 @@ object SyncManager {
         }
     }
 
-    /**
-     * 从云端查询某天的应用详情列表
-     */
-    fun fetchAppDetailsFromCloud(deviceId: String, dateKey: String): List<JSONObject> {
+    fun fetchAppDetailsFromCloud(userEmail: String, dateKey: String): List<JSONObject> {
         val request = Request.Builder()
             .url("${SupabaseConfig.REST_URL}/${SupabaseConfig.TABLE_APP_USAGE_DETAILS}?" +
-                    "user_id=eq.$deviceId&date_key=eq.$dateKey&select=*&order=usage_time_ms.desc")
+                    "user_id=eq.$userEmail&date_key=eq.$dateKey&select=*&order=usage_time_ms.desc")
             .addHeader("apikey", SupabaseConfig.ANON_KEY)
             .addHeader("Authorization", "Bearer ${SupabaseConfig.ANON_KEY}")
             .get()
@@ -198,13 +191,6 @@ object SyncManager {
     }
 
     // ================== 内部工具 ==================
-
-    private fun getDeviceId(context: Context): String {
-        return Settings.Secure.getString(
-            context.contentResolver,
-            Settings.Secure.ANDROID_ID
-        ) ?: "unknown-device"
-    }
 
     private fun executeRequest(request: Request, label: String) {
         try {
